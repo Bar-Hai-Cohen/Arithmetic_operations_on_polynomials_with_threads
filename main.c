@@ -1,6 +1,58 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
+
+#define SIZE 1280 // Size of shared memory segment
+
+int fd_shm; // Internal key to the shared memory
+sem_t *empty_sem;
+sem_t *full_sem;
+sem_t *mutex_sem;
+char *shm_ptr; // Pointer to shared memory
+
+// Function to perform clean-up tasks and free memory
+void clean_up() {
+    // Cleanup code
+    munmap(shm_ptr, SIZE);
+    close(fd_shm);
+    shm_unlink("/shm");
+    sem_close(empty_sem);
+    sem_close(full_sem);
+    sem_close(mutex_sem);
+    sem_unlink("/empty_sem");
+    sem_unlink("/full_sem");
+    sem_unlink("/mutex_sem");
+}
+
+// Signal handler function for SIGINT signal (Ctrl+C)
+void signal_handler(int signum) {
+    if (signum == SIGINT) {
+        clean_up();
+        exit(0);
+    }
+}
+
+// Structure to represent a polynomial
+typedef struct {
+    int *polynomial; // Array to store the polynomial coefficients
+    int degree;      // Degree of the polynomial
+} polynomial;
+
+// Structure to hold data for each thread
+typedef struct {
+    polynomial *poly1;   // Pointer to polynomial 1
+    polynomial *poly2;   // Pointer to polynomial 2
+    int coeffIndex;      // Index of the coefficient to calculate
+    int operation;       // Flag indicating the type of operation
+    int *result;         // Array to store the calculated result
+    pthread_mutex_t *mutex; // Mutex for thread synchronization
+} ThreadData;
 
 // Function to print the resulting polynomial
 void print_result(int *result, int max_degree) {
@@ -89,22 +141,24 @@ void multiply_polynomials(int *poly1, int degree1, int *poly2, int degree2) {
     print_result(result, degree_result);
 }
 
-// Function to subtract two polynomials
+// Function to perform polynomial subtraction
 void subtract_polynomials(int *coeff1, int *coeff2, int degree1, int degree2, int max) {
     int max_degree = (degree1 > degree2) ? degree1 : degree2;
     int result[max + 1];
     int i;
+
 
     // Subtract the coefficients of the two polynomials
     for (i = 0; i <= max_degree; i++) {
         result[i] = coeff1[i] - coeff2[i];
     }
 
+
     // Print the result
     print_result(result, max_degree);
 }
 
-// Function to add two polynomials
+// Function to perform polynomial addition
 void add_polynomials(int *poly1, int *poly2, int degree1, int degree2, int max) {
     int max_degree = (degree1 > degree2) ? degree1 : degree2;
     int result[max + 1];
@@ -117,7 +171,7 @@ void add_polynomials(int *poly1, int *poly2, int degree1, int degree2, int max) 
     print_result(result, max_degree);
 }
 
-// Function to check the operation to perform and call the appropriate function
+// Function to check the operation to be performed
 void check_operation(int flag_operation, int *coeff1, int *coeff2, int *degree1, int *degree2, int max) {
     int degree_1 = *degree1;
     int degree_2 = *degree2;
@@ -133,12 +187,15 @@ void check_operation(int flag_operation, int *coeff1, int *coeff2, int *degree1,
     } else {
         printf("ERR\n");
     }
+
 }
 
-// Function to process the input string containing two polynomial expressions
+// Function to process a single polynomial and extract coefficients and degree
 void process_polynomial(char *poly_str, int *coeff, int *degree, int diff, int max) {
     int i;
-    char *coeff_str, *token, *save_ptr;
+    char *coeff_str, *poly_op, *token, *save_ptr;
+    int poly_len = strlen(poly_str);
+
     // Find the polynomial degree
     token = strtok_r(poly_str, ":", &save_ptr);
     *degree = atoi(token);
@@ -158,7 +215,7 @@ void process_polynomial(char *poly_str, int *coeff, int *degree, int diff, int m
 
 }
 
-// Function to process the input string containing two polynomial expressions
+// Function to process multiple polynomials from the input string
 void process_polys(char *input_str, int *coeff1, int *coeff2, int *degree1, int *degree2, int diff, int max) {
     char *token, *save_ptr;
     int i = 0;
@@ -176,7 +233,7 @@ void process_polys(char *input_str, int *coeff1, int *coeff2, int *degree1, int 
     }
 }
 
-// Function to extract the degree of a polynomial from a polynomial string
+// Function to get the degree of a polynomial
 int get_degree(char *poly_str) {
     int degree = 0;
     char *token, *save_ptr;
@@ -188,7 +245,7 @@ int get_degree(char *poly_str) {
     return degree;
 }
 
-// Function to find the highest degree among the polynomials in the input string
+// Function to get the highest degree among two polynomials
 int get_highest_degree(char *input_str) {
     char *token, *save_ptr;
     int highest_degree = 0;
@@ -207,7 +264,7 @@ int get_highest_degree(char *input_str) {
     return highest_degree;
 }
 
-// Function to calculate the absolute difference in degrees between the two polynomials
+// Function to get the difference between two degree among two polynomials
 int get_difference_degree(char *input_str) {
     char *token, *save_ptr;
     int difference[2] = {0, 0};
@@ -229,8 +286,9 @@ int get_difference_degree(char *input_str) {
     return abs(difference[1] - difference[0]);
 }
 
-// Function to set all elements of two arrays to zero
+// all elements in both arrays to zero.
 void set_zero(int *arr, int *arr1, int n) {
+
     for (int i = 0; i < n; i++) {
         arr[i] = 0;
     }
@@ -240,7 +298,7 @@ void set_zero(int *arr, int *arr1, int n) {
     }
 }
 
-//function to get the operation
+//takes a string str as input and returns an integer based on the contents of the string. It checks if the string contains specific substrings ("ADD", "SUB", "MUL")
 int get_operation(char *str) {
     if (strstr(str, "ADD")) {
         return 1;
@@ -253,51 +311,160 @@ int get_operation(char *str) {
     }
 }
 
-// Function to check the size of the input string
-void check_string_size(char *str) {
-    if (strlen(str) > 128) {
-        printf("ERR\n");
-        exit(1);
+// Function to calculate the resulting polynomial in a separate thread
+void *calculateCoefficient(void *data) {
+    ThreadData *threadData = (ThreadData *) data;
+    int coeffIndex = threadData->coeffIndex;
+    int operation = threadData->operation;
+    int pol1 = threadData->poly1->polynomial[coeffIndex];
+    int pol2 = threadData->poly2->polynomial[coeffIndex];
+
+    if (operation == 1) { // Addition
+        pthread_mutex_lock(threadData->mutex);
+        threadData->result[coeffIndex] = pol1 + pol2;
+        pthread_mutex_unlock(threadData->mutex);
+    } else if (operation == 2) { // Subtraction
+        pthread_mutex_lock(threadData->mutex);
+        threadData->result[coeffIndex] =threadData->poly1->polynomial[coeffIndex] - threadData->poly2->polynomial[coeffIndex];
+        pthread_mutex_unlock(threadData->mutex);
     }
+    pthread_exit(NULL);
+    return NULL;
 }
 
 int main() {
+    signal(SIGINT, signal_handler);// Set up signal handler for interrupt signal (SIGINT)
+    int index_memory_counter = 0;// Counter for the shared memory index
+    polynomial poly1;
+    polynomial poly2;
+
+    // Open the shared memory object
+    if ((fd_shm = shm_open("/shm", O_RDWR, 0)) == -1) {
+        perror("ERR\n");
+        clean_up();
+        exit(1);
+    }
+
+    // Map the shared memory object into the process's address space
+    if ((shm_ptr = mmap(NULL, SIZE, PROT_WRITE | PROT_READ, MAP_SHARED, fd_shm, 0)) == MAP_FAILED) {
+        perror("ERR\n");
+        clean_up();
+        exit(1);
+    }
+
+    // Open the empty semaphore
+    if ((empty_sem = sem_open("/empty_sem", 0)) == SEM_FAILED) {
+        perror("ERR\n");
+        clean_up();
+        exit(1);
+    }
+
+    // Open the full semaphore
+    if ((full_sem = sem_open("/full_sem", 0)) == SEM_FAILED) {
+        perror("ERR\n");
+        clean_up();
+        exit(1);
+    }
+
+    // Open the mutex semaphore
+    if ((mutex_sem = sem_open("/mutex_sem", 0)) == SEM_FAILED) {
+        perror("ERR\n");
+        clean_up();
+        exit(1);
+    }
 
     while (1) {
-        char input_str[130];
-        int degree1 = 0, degree2 = 0;
 
-        // Read the input string
-        //printf("Enter the string:");
-        fgets(input_str, 130, stdin);
-        // Check the size of the input string
-        check_string_size(input_str);
+        sem_wait(full_sem); //Decrease full in one -- > full - 1
+        sem_wait(mutex_sem); //Decrease mutex in one -- > mutex - 1
 
-        input_str[strcspn(input_str, "\n")] = 0; // Remove the trailing newline character
+        // Check if index_memory_counter is less than 10 and the shared memory is not empty
+        if (index_memory_counter < 10) {
+            char temp[128];
+            strncpy(temp, shm_ptr+(index_memory_counter*128), 128);
+            if(strcmp(temp,"END")==0){
+                clean_up();
+                exit(0);
+            }
 
-        if (strcmp(input_str, "END") == 0) {
-            exit(0); // Terminate the program
+            int diff = get_difference_degree(temp);
+            int flag_operation = get_operation(temp);
+            int max = get_highest_degree(temp);
+            //printf("max value: %d",max);
+
+            // Allocate memory for polynomial arrays
+            poly1.polynomial = (int *) malloc((max + 1) * sizeof(int));
+            poly2.polynomial = (int *) malloc((max + 1) * sizeof(int));
+            poly1.degree = 0;
+            poly2.degree = 0;
+            //printf("malloc size is : %d",max+1);
+
+            // Set all coefficients to zero
+            set_zero(poly1.polynomial, poly2.polynomial, max + 1);
+
+            char send[128];
+            strncpy(send, shm_ptr+(index_memory_counter*128), 128);
+
+            process_polys(send, poly1.polynomial, poly2.polynomial, &poly1.degree, &poly2.degree, diff, max);
+
+            if (flag_operation != 3) {
+                pthread_t threads[max + 1];
+                ThreadData threadData[max + 1];
+                pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+                int *result = (int *) malloc((max + 1) * sizeof(int));
+                memset(result, 0, (max + 1) * sizeof(int));
+                // Create threads to calculate polynomial coefficients
+                for (int i = 0; i < max + 1; i++) {
+                    threadData[i].poly1 = malloc(sizeof(polynomial));
+                    threadData[i].poly2 = malloc(sizeof(polynomial));
+                    threadData[i].poly1->polynomial = malloc((max + 1) * sizeof(int));
+                    threadData[i].poly2->polynomial = malloc((max + 1) * sizeof(int));
+                    for (int j = 0; j < max + 1; ++j) {
+                        threadData[i].poly1->polynomial[j] = poly1.polynomial[j];
+                        threadData[i].poly2->polynomial[j] = poly2.polynomial[j];
+                    }
+                    threadData[i].coeffIndex = i;
+                    threadData[i].operation = flag_operation;
+                    threadData[i].result = result;
+                    threadData[i].mutex = &mutex;
+
+                    pthread_create(&threads[i], NULL, calculateCoefficient, (void *) &threadData[i]);
+                }
+
+                // Wait for threads to finish
+                for (int i = 0; i < max+1; i++) {
+                    pthread_join(threads[i], NULL);
+                }
+                print_result(result, max);
+
+                // Clean up thread data and result array
+                for (int i = 0; i < max + 1; ++i) {
+                    free(threadData[i].poly1->polynomial);
+                    free(threadData[i].poly2->polynomial);
+                    free(threadData[i].poly1);
+                    free(threadData[i].poly2);
+                }
+                free(result);
+            } else {
+                check_operation(flag_operation, poly1.polynomial, poly2.polynomial, &poly1.degree, &poly2.degree, max);
+            }
+            free(poly1.polynomial);
+            free(poly2.polynomial);
+            index_memory_counter++;
+            if (index_memory_counter == 10) {
+                index_memory_counter = 0;
+                // Adjust the shm_ptr by subtracting 1280
+                // This may indicate managing memory segments in a cyclic manner
+            }
         }
+        // Increase the mutex semaphore count by 1
+        sem_post(mutex_sem); //Increase mutex in one -- > mutex ++
 
-        char temp[strlen(input_str)];
-        strcpy(temp, input_str);
+        // Increase the empty semaphore count by 1
+        sem_post(empty_sem);
 
-        // Get the highest degree among the polynomials
-        int diff = get_difference_degree(temp);
-        //printf("the diff degree is %d\n ", diff);
-
-        int flag_operation = get_operation(temp);
-        //printf("the flag  is %d\n ", flag_operation);
-
-        int max = get_highest_degree(temp);
-        //printf("the max degree is %d\n ", max);
-
-        int coeff1[max + 1];
-        int coeff2[max + 1];
-        set_zero(coeff1, coeff2, max+ 1);
-
-        // Check the operation and call the appropriate function
-        process_polys(input_str, coeff1, coeff2, &degree1, &degree2, diff, max);
-        check_operation(flag_operation, coeff1, coeff2, &degree1, &degree2, max);
+        // Sleep for 1 second before processing the next iteration
+        sleep(1);
     }
-}//SOF CODE 1.1 END
+}//VERSION 1.0 final thread consumer
